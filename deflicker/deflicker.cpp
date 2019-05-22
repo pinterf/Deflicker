@@ -27,6 +27,7 @@
 #include "math.h"  // for sqrt, fabs
 
 #include "info.h" // for info on frame
+#include "stdint.h"
 
 class Deflicker : public GenericVideoFilter {
   // Deflicker defines the name of your filter class. 
@@ -106,12 +107,13 @@ Deflicker::Deflicker(PClip _child, float _percent, int _lag, float _noise, int _
     opt = 1;
   }
 #endif
-  if (vi.IsYV12()) // added in v.0.4
-    isYUY2 = false;
-  else if (vi.IsYUY2())
-    isYUY2 = true;
-  else
-    env->ThrowError("Deflicker: input to filter must be in YV12 or YUY2!");
+
+  if(!vi.IsYUY2() && !vi.IsY() && !vi.IsYUV() && !vi.IsYUVA())
+    env->ThrowError("Deflicker: input to filter must be Y, YUV or YUY2!");
+  if (vi.BitsPerComponent() > 8)
+    env->ThrowError("Deflicker: only 8 bit clips supported");
+
+  isYUY2 = vi.IsYUY2();
 
   range = abs(lag);
 
@@ -417,6 +419,16 @@ void CorrectYV12_isse(BYTE* dstp, const BYTE* srcp, int src_width, short mult256
 //
 //****************************************************************************
 //
+
+static void copy_plane(PVideoFrame& destf, PVideoFrame& currf, int plane, IScriptEnvironment* env) {
+  const uint8_t* srcp = currf->GetReadPtr(plane);
+  int src_pitch = currf->GetPitch(plane);
+  int height = currf->GetHeight(plane);
+  int row_size = currf->GetRowSize(plane);
+  uint8_t* destp = destf->GetWritePtr(plane);
+  int dst_pitch = destf->GetPitch(plane);
+  env->BitBlt(destp, dst_pitch, srcp, src_pitch, row_size, height);
+}
 
 PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
   // This is the implementation of the GetFrame function.
@@ -724,29 +736,16 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
   // Requests the height of the destination image.
   const int dst_height = dst->GetHeight();
 
-
   if (!isYUY2)
-  { // YV12
-    // This section of code deals with the U and V planes of planar formats (e.g. YV12)
-    // So first of all we have to get the additional info on the U and V planes
-
-    const int dst_pitchUV = dst->GetPitch(PLANAR_U);	// The pitch,height and width information
-    const int dst_widthUV = dst->GetRowSize(PLANAR_U);	// is guaranted to be the same for both
-    const int dst_heightUV = dst->GetHeight(PLANAR_U);	// the U and V planes so we only the U
-    const int src_pitchUV = src->GetPitch(PLANAR_U);	// plane values and use them for V as
-    const int src_widthUV = src->GetRowSize(PLANAR_U);	// well
-    const int src_heightUV = src->GetHeight(PLANAR_U);	//
-
-
-    //Copy U plane src to dst
-    const BYTE* srcpUV = src->GetReadPtr(PLANAR_U);
-    BYTE* dstpUV = dst->GetWritePtr(PLANAR_U);
-    env->BitBlt(dstpUV, dst_pitchUV, srcpUV, src_pitchUV, src_widthUV, src_heightUV);
-
-    //Copy V plane src to dst
-    srcpUV = src->GetReadPtr(PLANAR_V);
-    dstpUV = dst->GetWritePtr(PLANAR_V);
-    env->BitBlt(dstpUV, dst_pitchUV, srcpUV, src_pitchUV, src_widthUV, src_heightUV);
+  { 
+    // copy chroma planes
+    if (vi.NumComponents() >= 3) {
+      copy_plane(dst, src, PLANAR_U, env);
+      copy_plane(dst, src, PLANAR_V, env);
+    }
+    // copy alpha plane
+    if(vi.NumComponents() == 4)
+      copy_plane(dst, src, PLANAR_A, env);
   }
 
   // deal with the Y Plane
