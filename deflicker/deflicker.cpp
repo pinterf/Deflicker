@@ -877,21 +877,11 @@ AVSValue __cdecl Create_Deflicker(AVSValue args, void* user_data, IScriptEnviron
 // The following function is the function that actually registers the filter in AviSynth
 // It is called automatically, when the plugin is loaded to see which functions this filter contains.
 
-extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit2(IScriptEnvironment* env) {
-    env->AddFunction("Deflicker", "c[percent]f[lag]i[noise]f[scene]i[lmin]i[lmax]i[border]i[info]b[debug]b", Create_Deflicker, 0);
-    // The AddFunction has the following paramters:
-    // AddFunction(Filtername , Arguments, Function to call,0);
-    
-    // Arguments is a string that defines the types and optional names of the arguments for you filter.
-    // c - Video Clip
-    // i - Integer number
-    // f - Float number
-    // s - String
-    // b - boolean
+const AVS_Linkage* AVS_linkage = nullptr;
 
-	 // The word inside the [ ] lets you used named parameters in your script
-
-    return "Deflicker plugin";
-    // A freeform name of the plugin.
+extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit3(IScriptEnvironment* env, const AVS_Linkage* const vectors) {
+  AVS_linkage = vectors;
+  env->AddFunction("Deflicker", "c[percent]f[lag]i[noise]f[scene]i[lmin]i[lmax]i[border]i[info]b[debug]b", Create_Deflicker, 0);
+  return "Deflicker plugin";
 }
 
