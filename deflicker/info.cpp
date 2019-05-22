@@ -1696,8 +1696,10 @@ void DrawString(PVideoFrame& dst, VideoInfo& vi, int x, int y, const char* s)
   }
 
   int bits_per_pixel = vi.BitsPerComponent();
-  int xRatioShift = vi.GetPlaneWidthSubsampling(PLANAR_U);
-  int yRatioShift = vi.GetPlaneHeightSubsampling(PLANAR_U);
+  const bool grey = vi.IsY();
+  int xRatioShift = grey ? 1 : vi.GetPlaneWidthSubsampling(PLANAR_U);
+  int yRatioShift = grey ? 1 : vi.GetPlaneHeightSubsampling(PLANAR_U);
+
   if (vi.IsRGB()) {
     for (int xx = 0; *s; ++s, ++xx) {
       if (bits_per_pixel == 8)
@@ -1710,7 +1712,6 @@ void DrawString(PVideoFrame& dst, VideoInfo& vi, int x, int y, const char* s)
     return;
   }
 
-  const bool grey = vi.IsY();
   for (int xx = 0; *s; ++s, ++xx) {
     if (bits_per_pixel == 8)
       DrawDigit<uint8_t>(dst, x + xx, y, *s - ' ', bits_per_pixel, xRatioShift, yRatioShift, !grey, false);
