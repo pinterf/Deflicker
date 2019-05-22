@@ -28,9 +28,6 @@
 
 #include "info.h" // for info on frame
 
-#define ISSE 1
-//#undef ISSE // for debug
-
 class Deflicker : public GenericVideoFilter {   
   // Deflicker defines the name of your filter class. 
   // This name is only used internally, and does not affect the name of your filter or similar.
@@ -64,7 +61,7 @@ class Deflicker : public GenericVideoFilter {
 	int fieldbased;
 	bool isYUY2;
 
-
+  int opt; // 0:C, 1:SSE
 
 public:
   // This defines that these functions are present in your class.
@@ -100,6 +97,15 @@ Deflicker::Deflicker(PClip _child, float _percent, int _lag, float _noise, int _
   //   PClip child;   // Contains the source clip.
   //   VideoInfo vi;  // Contains videoinfo on the source clip.
 
+  opt = 0; // C
+
+#ifndef X86_64
+  // no x64 asm at the moment. Todo: move to intrinsics 
+  if (env->GetCPUFlags() & CPUF_SSE)
+  {
+    opt = 1;
+  }
+#endif
 	if (vi.IsYV12()) // added in v.0.4
 		isYUY2 = false;
 	else if (vi.IsYUY2())
@@ -207,7 +213,7 @@ const __int64 AllMask = 0xffffffffffffffff;
 //
 //****************************************************************************
 //
-_inline void SumLine(const BYTE *srcp, int width, int *mean, int *varline)
+_inline void SumLine_c(const BYTE *srcp, int width, int *mean, int *varline)
 {
 	for (int w = 0; w < width; w+=2) 
 	{   // use step=2 for more fast YV12 and using the same code for YUY2
@@ -220,8 +226,10 @@ _inline void SumLine(const BYTE *srcp, int width, int *mean, int *varline)
 //
 //****************************************************************************
 //
+#ifndef X86_64
 void SumLine_isse(const BYTE *srcp, int width, int *mean, int *varline)
 {
+  // no inline asm for x64 in VS2019
 //	for (int w = 0; w < width; w+=2) 
 //	{   // use step=2 for more fast YV12 and using the same code for YUY2
 //		int cur = srcp[w];
@@ -263,11 +271,12 @@ Loop4:
 
 	}
 }
+#endif
 
 //
 //****************************************************************************
 //
-_inline void CorrectYUY2(BYTE *dstp, const BYTE *srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+_inline void CorrectYUY2_c(BYTE *dstp, const BYTE *srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
 	for (int w = 0; w < src_width; w+=2) // every 2
 	{    
@@ -280,6 +289,7 @@ _inline void CorrectYUY2(BYTE *dstp, const BYTE *srcp, int src_width, short mult
 //
 //****************************************************************************
 //
+#ifndef X86_64
 void CorrectYUY2_isse(BYTE *dstp, const BYTE *srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
 //	for (int w = 0; w < src_width; w+=2) // every 2
@@ -333,11 +343,12 @@ Loop4:
 
 	}
 }
+#endif
 
 //
 //****************************************************************************
 //
-_inline void CorrectYV12(BYTE *dstp, const BYTE *srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+_inline void CorrectYV12_c(BYTE *dstp, const BYTE *srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
 	for (int w = 0; w < src_width; w+=1) // every 1
 	{    
@@ -349,6 +360,7 @@ _inline void CorrectYV12(BYTE *dstp, const BYTE *srcp, int src_width, short mult
 //
 //****************************************************************************
 //
+#ifndef X86_64
 void CorrectYV12_isse(BYTE *dstp, const BYTE *srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
 //	for (int w = 0; w < src_width; w+=1) // every 1
@@ -400,6 +412,7 @@ Loop4:
 
 	}
 }
+#endif
 
 //
 //****************************************************************************
@@ -489,26 +502,34 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
 			mean = 0; // mean luma
 			var = 0; // luma variation
 			srcp += border*src_pitch + borderw; // start offset (skip border lines)
-			for (h=border; h<src_height-border; h+=1)
-			{   // Loop from top line to bottom line 
-				varline =0; // line luma variation 
-#ifdef ISSE
+
+      if (opt == 0) {
+        for (h = border; h < src_height - border; h += 1)
+        {   // Loop from top line to bottom line 
+          varline = 0; // line luma variation 
+          SumLine_c(srcp, src_width - borderw * 2, &mean, &varline);
+          var += (varline >> 5); //   /32 approximation, to not overflow
+          srcp += src_pitch;   // Add the pitch of one line (in bytes) to the source image.
+        }
+      }
+#ifndef X86_64
+      else {
+        for (h = border; h < src_height - border; h += 1)
+        {   // Loop from top line to bottom line 
+          varline = 0; // line luma variation 
 //					for (w = 0; w < src_width-borderw*2; w+=2) // chanded in v.0.4
 //					{   // use step=2 for more fast YV12 and using the same code for YUY2
 //						cur = srcp[w];
 //						mean += cur;
 //						varline += cur*cur; // simply quadrat, sub mean later
 //					}
-					SumLine_isse(srcp, src_width-borderw*2, &mean, &varline);
-#else
-					SumLine(srcp, src_width-borderw*2, &mean, &varline);
+          SumLine_isse(srcp, src_width - borderw * 2, &mean, &varline);
+          var += (varline >> 5); //   /32 approximation, to not overflow
+          srcp += src_pitch;   // Add the pitch of one line (in bytes) to the source image.
+        }
+        _asm emms
+      }
 #endif
-					var += (varline>>5); //   /32 approximation, to not overflow
-					srcp += src_pitch;   // Add the pitch of one line (in bytes) to the source image.
-			}
-#ifdef ISSE
-			_asm emms
-#endif			
 
 			mean = mean/( (src_height-2*border)*(src_width/2-borderw) ); // norm mean value (*2 every 2) - chanded in v.0.4
 			var = var/( ((src_height-2*border)*(src_width/2-borderw))/(32) ); // norm variation value (*2 every 2) - // chanded in v.0.4
@@ -730,43 +751,54 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
 	
 	// deal with the Y Plane
 
-	// luma correction	
-	for (h=0; h < src_height;h++)
-	{       // Loop from top line to bottom line 
-		if (isYUY2)
-		{
-#ifdef ISSE
-//			for (w = 0; w < src_width; w+=2) // every 2
-//			{    
-//				cur = (srcp[w]*mult256w)>>8 + addw;  // scaled by 256 integer - fast 
-//				dstp[w] = min(max(cur,lmin),lmax);
-//				dstp[w+1] = srcp[w+1];
-//			}
-			CorrectYUY2_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-#else
-			CorrectYUY2(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-#endif
-		}
-		else
-		{ // YV12
-#ifdef ISSE
+  if (opt == 0) { // C
+    // luma correction	
+    for (h = 0; h < src_height; h++)
+    {       // Loop from top line to bottom line 
+      if (isYUY2)
+      {
+        CorrectYUY2_c(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+      }
+      else
+      { // YV12
+        CorrectYV12_c(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+      }
+      srcp += src_pitch;            // Add the pitch  of one line (in bytes) to the source image.
+      dstp += dst_pitch;            // Add the pitch of one line (in bytes) to the dest image.
+    }
+  }
+#ifndef X86_64
+  else {
+
+    // luma correction	
+    for (h = 0; h < src_height; h++)
+    {       // Loop from top line to bottom line 
+      if (isYUY2)
+      {
+        //			for (w = 0; w < src_width; w+=2) // every 2
+        //			{    
+        //				cur = (srcp[w]*mult256w)>>8 + addw;  // scaled by 256 integer - fast 
+        //				dstp[w] = min(max(cur,lmin),lmax);
+        //				dstp[w+1] = srcp[w+1];
+        //			}
+        CorrectYUY2_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+      }
+      else
+      { // YV12
 //			for (w = 0; w < src_width; w++) // all
 //			{    
 //				cur = (srcp[w]*mult256w )>>8 + addw;  // scaled by 256 integer - fast 
 //				dstp[w] = min(max(cur,lmin),lmax);
 //			}
-			CorrectYV12_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-#else
-			CorrectYV12(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+        CorrectYV12_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+      }
+      srcp += src_pitch;            // Add the pitch  of one line (in bytes) to the source image.
+      dstp += dst_pitch;            // Add the pitch of one line (in bytes) to the dest image.
+    }
+    __asm emms
+  }
 #endif
-		}
-		srcp += src_pitch;            // Add the pitch  of one line (in bytes) to the source image.
-		dstp += dst_pitch;            // Add the pitch of one line (in bytes) to the dest image.
-	}
-#ifdef ISSE
-	__asm emms
-#endif
-	
+
 	// make border visible
 	if (info != 0 && border > 0)
 	{// show border
