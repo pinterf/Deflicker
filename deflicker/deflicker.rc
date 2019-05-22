@@ -1,0 +1,23 @@
+1 VERSIONINFO
+FILEVERSION 0, 4, 0, 0
+PRODUCTVERSION 0, 4, 0, 0
+FILEFLAGSMASK 0
+FILEOS 0x40000
+FILETYPE 1
+{
+ BLOCK "StringFileInfo"
+ {
+  BLOCK "040904E4"
+  {
+   VALUE "CompanyName", "A.G.Balakhnin aka Fizick, bag@hotmail.ru, http://bag.hotmail.ru"
+   VALUE "FileDescription", "DeFlicker plugin for Avithynth 2.5"
+   VALUE "FileVersion", "0.4"
+   VALUE "InternalName", "DeFlicker"
+   VALUE "LegalCopyright", "(c)A.G.Balakhnin, 2004"
+   VALUE "OriginalFilename", "DeFlicker.dll"
+   VALUE "ProductName", "DeFlicker filter"
+   VALUE "ProductVersion", "0.4"
+   VALUE "Comments", "Mean intensity stabilizer. Licensed under GNU GPL v.2"
+  }                                                                      
+ }
+}
