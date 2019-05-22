@@ -131,7 +131,7 @@ Deflicker::Deflicker(PClip _child, float _percent, int _lag, float _noise, int _
 	messagebuf = (char *)malloc(64);
 
 	// avisynth frame cache
-	SetCacheHints(CACHE_RANGE,cachecapacity);
+	SetCacheHints(CACHE_WINDOW,cachecapacity);
 
 	fieldbased = vi.IsFieldBased();  // after separatefields
 
