@@ -1,9 +1,37 @@
-// Borrowed from the author of IT.dll, whose name I
-// could not determine. Modified for YV12 by Donald Graft.
+/*
+		This program is free software; you can redistribute it and/or modify
+		it under the terms of the GNU General Public License as published by
+		the Free Software Foundation.
 
-#include "info.h"  // added by Fizick after renaming this file from info.h to to info.cpp
+		This program is distributed in the hope that it will be useful,
+		but WITHOUT ANY WARRANTY; without even the implied warranty of
+		MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+		GNU General Public License for more details.
 
-unsigned short font[][20] = {
+		You should have received a copy of the GNU General Public License
+		along with this program; if not, write to the Free Software
+		Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+		The author can be contacted at:
+		Donald Graft
+		neuron2@attbi.com.
+
+    Avisynth+ formats and high bit depth: pinterf
+*/
+
+
+#include	"info.h"
+
+#define	NOGDI
+#define	NOMINMAX
+#define	WIN32_LEAN_AND_MEAN
+
+#include "avisynth.h"
+#include <stdint.h>
+
+
+
+static unsigned short font[][20] = {
 //STARTCHAR space
 	{
 		0x0000,0x0000,0x0000,0x0000,
@@ -1542,7 +1570,159 @@ unsigned short font[][20] = {
 	}
 };
 
-void DrawDigit(PVideoFrame &dst, int x, int y, int num) 
+template <typename pixel_t>
+void DrawDigit(PVideoFrame &dst, int x, int y, int num, int bits_per_pixel, int xRatioShift, int yRatioShift, bool chroma, bool rgb)
+{
+  x = x * 10;
+  y = y * 20;
+
+  const pixel_t color = sizeof(pixel_t) == 4 ? (pixel_t)(235 / 255.0f) : 235 << (bits_per_pixel - 8);
+
+  int pitch = dst->GetPitch() / sizeof(pixel_t);
+
+  pixel_t* dstp = reinterpret_cast<pixel_t *>(dst->GetWritePtr());
+
+  if (rgb) // planar RGB
+  {
+    pixel_t* dstp1 = reinterpret_cast<pixel_t *>(dst->GetWritePtr(PLANAR_B));
+    pixel_t* dstp2 = reinterpret_cast<pixel_t *>(dst->GetWritePtr(PLANAR_R));
+    // write only to luma
+    for (int tx = 0; tx < 10; tx++) {
+      for (int ty = 0; ty < 20; ty++) {
+        const bool pix = font[num][ty] & (1 << (15 - tx));
+        pixel_t* dp = &dstp[(x + tx) + (y + ty) * pitch];
+        pixel_t* dp1 = &dstp1[(x + tx) + (y + ty) * pitch];
+        pixel_t* dp2 = &dstp2[(x + tx) + (y + ty) * pitch];
+        if constexpr (sizeof(pixel_t) != 4) {
+          if (pix)
+            *dp = *dp1 = *dp2 = color;
+          else {
+            *dp = (*dp * 3) >> 2;
+            *dp1 = (*dp1 * 3) >> 2;
+            *dp2 = (*dp2 * 3) >> 2;
+          }
+        }
+        else {
+          // float
+          if (pix)
+            *dp = *dp1 = *dp2 = color;
+          else {
+            *dp = *dp * 3.0f * 0.25f;
+            *dp1 = *dp1 * 3.0f * 0.25f;
+            *dp2 = *dp2 * 3.0f * 0.25f;
+          }
+        }
+      }
+    }
+    return;
+  }
+
+  // write only to luma
+  for (int tx = 0; tx < 10; tx++) {
+    for (int ty = 0; ty < 20; ty++) {
+      const bool pix = font[num][ty] & (1 << (15 - tx));
+      pixel_t* dp = &dstp[(x + tx) + (y + ty) * pitch];
+      if constexpr (sizeof(pixel_t) != 4) {
+        if (pix)
+          *dp = color;
+        else
+          *dp = (*dp * 3) >> 2;
+      }
+      else {
+        // float
+        if (pix)
+          *dp = color;
+        else
+          *dp = *dp * 3.0f * 0.25f;
+      }
+    }
+  }
+  if (!chroma)
+    return;
+
+  pixel_t* dstpU = reinterpret_cast<pixel_t *>(dst->GetWritePtr(PLANAR_U));
+  pixel_t* dstpV = reinterpret_cast<pixel_t *>(dst->GetWritePtr(PLANAR_V));
+
+  int pitchUV = dst->GetPitch(PLANAR_U);
+  const pixel_t midChroma = sizeof(pixel_t) == 4 ? (pixel_t)0.0f : 1 << (bits_per_pixel - 1);
+  for (int tx = 0; tx < 10; tx++)
+  {
+    for (int ty = 0; ty < 20; ty++)
+    {
+      int pos = ((x + tx) >> xRatioShift) + ((y + ty) >> yRatioShift) * pitchUV;
+      const bool pix = font[num][ty] & (1 << (15 - tx));
+      pixel_t* dpU = &dstpU[pos];
+      pixel_t* dpV = &dstpV[pos];
+      if constexpr (sizeof(pixel_t) != 4) {
+        if (pix)
+        {
+          *dpU = midChroma;
+          *dpV = midChroma;
+        }
+        else
+        {
+          *dpU = (pixel_t)((*dpU + midChroma) >> 1);
+          *dpV = (pixel_t)((*dpV + midChroma) >> 1);
+        }
+      }
+      else {
+        // float
+        if (pix)
+        {
+          *dpU = midChroma;
+          *dpV = midChroma;
+        }
+        else
+        {
+          *dpU = (pixel_t)((*dpU + midChroma) * 0.5f);
+          *dpV = (pixel_t)((*dpV + midChroma) * 0.5f);
+        }
+      }
+    }
+  }
+}
+
+// instantiate
+template void DrawDigit<uint8_t>(PVideoFrame &dst, int x, int y, int num, int bits_per_pixel, int xRatioShift, int yRatioShift, bool chroma, bool rgb);
+template void DrawDigit<uint16_t>(PVideoFrame &dst, int x, int y, int num, int bits_per_pixel, int xRatioShift, int yRatioShift, bool chroma, bool rgb);
+template void DrawDigit<float>(PVideoFrame &dst, int x, int y, int num, int bits_per_pixel, int xRatioShift, int yRatioShift, bool chroma, bool rgb);
+
+// for YUY2 and any planar
+void DrawString(PVideoFrame &dst, VideoInfo &vi, int x, int y, const char *s)
+{
+  if (vi.IsYUY2()) {
+    DrawStringYUY2(dst, x, y, s);
+    return;
+  }
+
+  int bits_per_pixel = vi.BitsPerComponent();
+  int xRatioShift = vi.GetPlaneWidthSubsampling(PLANAR_U);
+  int yRatioShift = vi.GetPlaneHeightSubsampling(PLANAR_U);
+  if (vi.IsRGB()) {
+    for (int xx = 0; *s; ++s, ++xx) {
+      if (bits_per_pixel == 8)
+        DrawDigit<uint8_t>(dst, x + xx, y, *s - ' ', bits_per_pixel, xRatioShift, yRatioShift, false, true);
+      else if (bits_per_pixel <= 16)
+        DrawDigit<uint16_t>(dst, x + xx, y, *s - ' ', bits_per_pixel, xRatioShift, yRatioShift, false, true);
+      else if (bits_per_pixel == 32)
+        DrawDigit<float>(dst, x + xx, y, *s - ' ', bits_per_pixel, xRatioShift, yRatioShift, false, true);
+    }
+    return;
+  }
+
+  const bool grey = vi.IsY();
+  for (int xx = 0; *s; ++s, ++xx) {
+    if (bits_per_pixel == 8)
+      DrawDigit<uint8_t>(dst, x + xx, y, *s - ' ', bits_per_pixel, xRatioShift, yRatioShift, !grey, false);
+    else if (bits_per_pixel <= 16)
+      DrawDigit<uint16_t>(dst, x + xx, y, *s - ' ', bits_per_pixel, xRatioShift, yRatioShift, !grey, false);
+    else if (bits_per_pixel == 32)
+      DrawDigit<float>(dst, x + xx, y, *s - ' ', bits_per_pixel, xRatioShift, yRatioShift, !grey, false);
+  }
+}
+
+#if 0
+void DrawDigit(::PVideoFrame &dst, int x, int y, int num) 
 {
 	int tx, ty;
 	unsigned char *dpY, *dpU, *dpV;
@@ -1585,10 +1765,53 @@ void DrawDigit(PVideoFrame &dst, int x, int y, int num)
 	}
 }
 
-void DrawString(PVideoFrame &dst, int x, int y, const char *s) 
+void DrawString(::PVideoFrame &dst, int x, int y, const char *s) 
 {
 	for (int xx = 0; *s; ++s, ++xx) {
 		DrawDigit(dst, x + xx, y, *s - ' ');
 	}
 }
+#endif
 
+void DrawDigitYUY2(::PVideoFrame &dst, int x, int y, int num) 
+{
+	extern unsigned short font[][20];
+
+	x = x * 10;
+	y = y * 20;
+
+	int pitch = dst->GetPitch();
+	for (int tx = 0; tx < 10; tx++) {
+		for (int ty = 0; ty < 20; ty++) {
+			unsigned char *dp = &dst->GetWritePtr()[(x + tx) * 2 + (y + ty) * pitch];
+			if (font[num][ty] & (1 << (15 - tx))) {
+				if (tx & 1) {
+					dp[0] = 250;
+					dp[-1] = 128;
+					dp[1] = 128;
+				} else {
+					dp[0] = 250;
+					dp[1] = 128;
+					dp[3] = 128;
+				}
+			} else {
+				if (tx & 1) {
+					dp[0] = (unsigned char) ((dp[0] * 3) >> 2);
+					dp[-1] = (unsigned char) ((dp[-1] + 128) >> 1);
+					dp[1] = (unsigned char) ((dp[1] + 128) >> 1);
+				} else {
+					dp[0] = (unsigned char) ((dp[0] * 3) >> 2);
+					dp[1] = (unsigned char) ((dp[1] + 128) >> 1);
+					dp[3] = (unsigned char) ((dp[3] + 128) >> 1);
+				}
+			}
+		}
+	}
+}
+
+void DrawStringYUY2(::PVideoFrame &dst, int x, int y, const char *s) 
+{
+	for (int xx = 0; *s; ++s, ++xx) {
+		DrawDigitYUY2(dst, x + xx, y, *s - ' ');
+	}
+}

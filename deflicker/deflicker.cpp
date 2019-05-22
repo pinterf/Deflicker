@@ -823,27 +823,27 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
 		if (nbase != ndest) 
 		{
 			sprintf(messagebuf," DeFlicker");
-			DrawString(dst,xmsg,ymsg,messagebuf);
+			DrawString(dst, vi, xmsg,ymsg,messagebuf);
 		}
 		else
 		{
 			sprintf(messagebuf," DeFlicker:NEW"); // new scene
-			DrawString(dst,xmsg,ymsg,messagebuf);
+			DrawString(dst, vi,xmsg,ymsg,messagebuf);
 		}
 		sprintf(messagebuf," frame=%7d", ndest);
-		DrawString(dst,xmsg,ymsg+1,messagebuf);
+		DrawString(dst, vi, xmsg,ymsg+1,messagebuf);
 		sprintf(messagebuf," base =%7d", nbase);
-		DrawString(dst,xmsg,ymsg+2,messagebuf);
+		DrawString(dst, vi, xmsg,ymsg+2,messagebuf);
 		sprintf(messagebuf," mean   =%3d", meancache[n]);
-		DrawString(dst,xmsg,ymsg+3,messagebuf);
+		DrawString(dst, vi, xmsg,ymsg+3,messagebuf);
 		sprintf(messagebuf," sq.var =%5.1f", sqrt(float(varcache[n])));
-		DrawString(dst,xmsg,ymsg+4,messagebuf);
+		DrawString(dst, vi, xmsg,ymsg+4,messagebuf);
 		sprintf(messagebuf," mult= %7.3f", mult);
-		DrawString(dst,xmsg,ymsg+5,messagebuf);
+		DrawString(dst, vi, xmsg,ymsg+5,messagebuf);
 		sprintf(messagebuf," add = %7.1f", add);
-		DrawString(dst,xmsg,ymsg+6,messagebuf);
+		DrawString(dst, vi, xmsg,ymsg+6,messagebuf);
 		sprintf(messagebuf," m.fixed=%5.1f", meansmoothed);
-		DrawString(dst,xmsg,ymsg+7,messagebuf);
+		DrawString(dst, vi, xmsg,ymsg+7,messagebuf);
 	}
 	
 
