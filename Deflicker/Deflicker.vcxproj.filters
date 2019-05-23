@@ -21,12 +21,18 @@
     <ClCompile Include="info.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="deflicker_avx2.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="info.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="avisynth.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="deflicker_avx2.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
