@@ -1,8 +1,10 @@
 /*
-    Deflicker plugin for Avisynth 2.5 -  mean intensity stabilizer
+    Deflicker plugin for Avisynth 2.6 -  mean intensity stabilizer
   Version 0.4 August 16,2004
-  (c) 2004, A.G.Balakhnin aka Fizick
+    (c) 2004, A.G.Balakhnin aka Fizick
   bag@hotmail.ru
+
+  Code update, AVS2.6, x64, SSE2, AVX2 2019 by pinterf
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -22,6 +24,8 @@
 //following  includes needed
 #include "windows.h"
 #include "avisynth.h"
+
+#include "deflicker_avx2.h"
 
 #include "stdio.h"  // for debug
 #include "math.h"  // for sqrt, fabs
@@ -230,7 +234,7 @@ const __int64 AllMask = 0xffffffffffffffff;
 //
 //****************************************************************************
 //
-_inline void SumLine_yuy2_c(const BYTE* srcp, int width, int* mean, int* varline)
+static void __forceinline SumLine_yuy2_c(const BYTE* srcp, int width, int* mean, int* varline)
 {
   for (int w = 0; w < width; w += 2)
   {   // use step=2 for more fast YV12 and using the same code for YUY2
@@ -240,7 +244,7 @@ _inline void SumLine_yuy2_c(const BYTE* srcp, int width, int* mean, int* varline
   }
 }
 
-_inline void SumLine_c(const BYTE* srcp, int width, int* mean, int* varline)
+static void __forceinline SumLine_c(const BYTE* srcp, int width, int* mean, int* varline)
 {
   for (int w = 0; w < width; w++)
   { 
@@ -254,7 +258,7 @@ _inline void SumLine_c(const BYTE* srcp, int width, int* mean, int* varline)
 //****************************************************************************
 //
 #ifndef X86_64
-void SumLine_yuy2_isse(const BYTE* srcp, int width, int* mean, int* varline)
+static void __forceinline SumLine_yuy2_isse(const BYTE* srcp, int width, int* mean, int* varline)
 {
   // no inline asm for x64 in VS2019
 //	for (int w = 0; w < width; w+=2) 
@@ -300,7 +304,7 @@ void SumLine_yuy2_isse(const BYTE* srcp, int width, int* mean, int* varline)
 }
 
 // v0.6: non-YUY2: count not only every second pixels
-void SumLine_isse(const BYTE* srcp, int width, int* mean, int* varline)
+static void __forceinline SumLine_isse(const BYTE* srcp, int width, int* mean, int* varline)
 {
   // no inline asm for x64 in VS2019
 //	for (int w = 0; w < width; w+=2) 
@@ -365,7 +369,7 @@ void SumLine_isse(const BYTE* srcp, int width, int* mean, int* varline)
 #endif
 
 template<bool isYUY2>
-void SumLine_sse2(const BYTE* srcp, int width, int* mean, int* varline)
+static void __forceinline SumLine_sse2(const BYTE* srcp, int width, int* mean, int* varline)
 {
   const int wmod16 = width / 16 * 16;
   auto zero = _mm_setzero_si128();
@@ -438,7 +442,7 @@ void SumLine_sse2(const BYTE* srcp, int width, int* mean, int* varline)
 //
 //****************************************************************************
 //
-_inline void CorrectYUY2_c(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+static void __forceinline CorrectYUY2_c(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
   for (int w = 0; w < src_width; w += 2) // every 2
   {
@@ -452,7 +456,7 @@ _inline void CorrectYUY2_c(BYTE* dstp, const BYTE* srcp, int src_width, short mu
 //****************************************************************************
 //
 #ifndef X86_64
-void CorrectYUY2_isse(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+static void __forceinline CorrectYUY2_isse(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
 //	for (int w = 0; w < src_width; w+=2) // every 2
 //	{    
@@ -510,7 +514,7 @@ void CorrectYUY2_isse(BYTE* dstp, const BYTE* srcp, int src_width, short mult256
 //
 //****************************************************************************
 //
-_inline void CorrectYV12_c(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+static void __forceinline CorrectYUV_c(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
   for (int w = 0; w < src_width; w += 1) // every 1
   {
@@ -519,7 +523,7 @@ _inline void CorrectYV12_c(BYTE* dstp, const BYTE* srcp, int src_width, short mu
   }
 }
 
-_inline void CorrectYV12_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+static void __forceinline CorrectYUV_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
 
   const int wmod16 = src_width / 16 * 16;
@@ -552,7 +556,7 @@ _inline void CorrectYV12_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short
 
 }
 
-_inline void CorrectYUY2_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+static void __forceinline CorrectYUY2_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
   const int wmod16 = src_width / 16 * 16;
   auto zero = _mm_setzero_si128();
@@ -593,7 +597,7 @@ _inline void CorrectYUY2_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short
 //****************************************************************************
 //
 #ifndef X86_64
-void CorrectYV12_isse(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+static void __forceinline CorrectYUV_isse(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
 { // correct luma 
 //	for (int w = 0; w < src_width; w+=1) // every 1
 //	{    
@@ -646,6 +650,70 @@ void CorrectYV12_isse(BYTE* dstp, const BYTE* srcp, int src_width, short mult256
 }
 #endif
 
+void CorrectFrame_YUY2_sse2(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch, int src_height, int src_width, short mult256w, short addw, short lmin, short lmax)
+{
+  for (int h = 0; h < src_height; h++)
+  {       // Loop from top line to bottom line 
+    CorrectYUY2_sse2(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+    srcp += src_pitch;
+    dstp += dst_pitch;
+  }
+}
+
+void CorrectFrame_sse2(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch, int src_height, int src_width, short mult256w, short addw, short lmin, short lmax)
+{
+  for (int h = 0; h < src_height; h++)
+  {       // Loop from top line to bottom line 
+    CorrectYUV_sse2(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+    srcp += src_pitch;
+    dstp += dst_pitch;
+  }
+}
+
+#ifndef X86_64
+void CorrectFrame_YUY2_isse(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch, int src_height, int src_width, short mult256w, short addw, short lmin, short lmax)
+{
+  for (int h = 0; h < src_height; h++)
+  {       // Loop from top line to bottom line 
+    CorrectYUY2_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+    srcp += src_pitch;
+    dstp += dst_pitch;
+  }
+  _mm_empty();
+}
+
+void CorrectFrame_isse(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch, int src_height, int src_width, short mult256w, short addw, short lmin, short lmax)
+{
+  for (int h = 0; h < src_height; h++)
+  {       // Loop from top line to bottom line 
+    CorrectYUV_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+    srcp += src_pitch;
+    dstp += dst_pitch;
+  }
+  _mm_empty();
+}
+#endif
+
+void CorrectFrame_YUY2_c(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch, int src_height, int src_width, short mult256w, short addw, short lmin, short lmax)
+{
+  for (int h = 0; h < src_height; h++)
+  {       // Loop from top line to bottom line 
+    CorrectYUY2_c(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+    srcp += src_pitch;
+    dstp += dst_pitch;
+  }
+}
+
+void CorrectFrame_c(BYTE* dstp, int dst_pitch, const BYTE* srcp, int src_pitch, int src_height, int src_width, short mult256w, short addw, short lmin, short lmax)
+{
+  for (int h = 0; h < src_height; h++)
+  {       // Loop from top line to bottom line 
+    CorrectYUV_c(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+    srcp += src_pitch;
+    dstp += dst_pitch;
+  }
+}
+
 //
 //****************************************************************************
 //
@@ -659,6 +727,89 @@ static void copy_plane(PVideoFrame& destf, PVideoFrame& currf, int plane, IScrip
   int dst_pitch = destf->GetPitch(plane);
   env->BitBlt(destp, dst_pitch, srcp, src_pitch, row_size, height);
 }
+
+void SumFrame_YUY2_sse2(const BYTE* srcp, int src_pitch, int width, int height, int borderw, int border, int64_t* mean64, int64_t* var64)
+{
+  for (int h = border; h < height - border; h++)
+  {   // Loop from top line to bottom line 
+    int varline = 0; // line luma variation 
+    int meanline = 0;
+    SumLine_sse2<true>(srcp, width - borderw * 2, &meanline, &varline);
+    *var64 += varline;
+    *mean64 += meanline;
+    srcp += src_pitch;
+  }
+}
+
+void SumFrame_sse2(const BYTE* srcp, int src_pitch, int width, int height, int borderw, int border, int64_t* mean64, int64_t* var64)
+{
+  for (int h = border; h < height - border; h++)
+  {   // Loop from top line to bottom line 
+    int varline = 0; // line luma variation 
+    int meanline = 0;
+    SumLine_sse2<false>(srcp, width - borderw * 2, &meanline, &varline);
+    *var64 += varline;
+    *mean64 += meanline;
+    srcp += src_pitch;
+  }
+}
+
+#ifndef X86_64
+void SumFrame_YUY2_isse(const BYTE* srcp, int src_pitch, int width, int height, int borderw, int border, int64_t* mean64, int64_t* var64)
+{
+  for (int h = border; h < height - border; h++)
+  {   // Loop from top line to bottom line 
+    int varline = 0; // line luma variation 
+    int meanline = 0;
+    SumLine_yuy2_isse(srcp, width - borderw * 2, &meanline, &varline);
+    *var64 += varline;
+    *mean64 += meanline;
+    srcp += src_pitch;
+  }
+  _mm_empty();
+}
+
+void SumFrame_isse(const BYTE* srcp, int src_pitch, int width, int height, int borderw, int border, int64_t* mean64, int64_t* var64)
+{
+  for (int h = border; h < height - border; h++)
+  {   // Loop from top line to bottom line 
+    int varline = 0; // line luma variation 
+    int meanline = 0;
+    SumLine_isse(srcp, width - borderw * 2, &meanline, &varline);
+    *var64 += varline;
+    *mean64 += meanline;
+    srcp += src_pitch;
+  }
+  _mm_empty();
+}
+#endif
+
+void SumFrame_YUY2_c(const BYTE* srcp, int src_pitch, int width, int height, int borderw, int border, int64_t* mean64, int64_t* var64)
+{
+  for (int h = border; h < height - border; h++)
+  {   // Loop from top line to bottom line 
+    int varline = 0; // line luma variation 
+    int meanline = 0;
+    SumLine_yuy2_c(srcp, width - borderw * 2, &meanline, &varline);
+    *var64 += varline;
+    *mean64 += meanline;
+    srcp += src_pitch;
+  }
+}
+
+void SumFrame_c(const BYTE* srcp, int src_pitch, int width, int height, int borderw, int border, int64_t* mean64, int64_t* var64)
+{
+  for (int h = border; h < height - border; h++)
+  {   // Loop from top line to bottom line 
+    int varline = 0; // line luma variation 
+    int meanline = 0;
+    SumLine_c(srcp, width - borderw * 2, &meanline, &varline);
+    *var64 += varline;
+    *mean64 += meanline;
+    srcp += src_pitch;
+  }
+}
+
 
 PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
   // This is the implementation of the GetFrame function.
@@ -745,118 +896,31 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
       int64_t mean64 = 0; // mean luma, 32 ibt int is good for summing up 2^23 pixels (8 388 608) in 8 bit
       int64_t var64 = 0; // luma variation
       srcp += border * src_pitch + borderw; // start offset (skip border lines)
-#if 0
-      if (opt == 0) {
-        for (h = border; h < src_height - border; h += 1)
-        {   // Loop from top line to bottom line 
-          varline = 0; // line luma variation
-          meanline = 0;
-          SumLine_yuy2_c(srcp, src_width - borderw * 2, &meanline, &varline);
-          var64 += varline;
-          mean64 += meanline;
-          srcp += src_pitch;
-        }
+      if (has_AVX2) {
+        if (isYUY2)
+          SumFrame_YUY2_avx2(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
+        else
+          SumFrame_avx2(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
       }
-#ifndef X86_64
-      else {
-        for (h = border; h < src_height - border; h += 1)
-        {   // Loop from top line to bottom line 
-          varline = 0; // line luma variation 
-          meanline = 0;
-//					for (w = 0; w < src_width-borderw*2; w+=2) // chanded in v.0.4
-//					{   // use step=2 for more fast YV12 and using the same code for YUY2
-//						cur = srcp[w];
-//						mean += cur;
-//						varline += cur*cur; // simply quadrat, sub mean later
-//					}
-          SumLine_isse(srcp, src_width - borderw * 2, &meanline, &varline);
-          var64 += varline;
-          mean64 += meanline;
-          srcp += src_pitch;
-        }
-        _asm emms
-      }
-#endif
-
-      mean = mean64 / ((src_height - 2 * border) * (src_width / 2 - borderw)); // norm mean value (*2 every 2) - chanded in v.0.4
-      var = var64 / ((src_height - 2 * border) * (src_width / 2 - borderw)); // norm variation value (*2 every 2) - // chanded in v.0.4
-#else
-      if (has_SSE2) {
-        if (isYUY2) {
-          for (h = border; h < src_height - border; h++)
-          {   // Loop from top line to bottom line 
-            varline = 0; // line luma variation 
-            meanline = 0;
-            SumLine_sse2<true>(srcp, src_width - borderw * 2, &meanline, &varline);
-            var64 += varline;
-            mean64 += meanline;
-            srcp += src_pitch;
-          }
-        }
-        else {
-          for (h = border; h < src_height - border; h++)
-          {   // Loop from top line to bottom line 
-            varline = 0; // line luma variation 
-            meanline = 0;
-            SumLine_sse2<false>(srcp, src_width - borderw * 2, &meanline, &varline);
-            var64 += varline;
-            mean64 += meanline;
-            srcp += src_pitch;
-          }
-        }
+      else if (has_SSE2) {
+        if (isYUY2)
+          SumFrame_YUY2_sse2(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
+        else
+          SumFrame_sse2(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
       }
 #ifndef X86_64
       else if (has_SSE) {
-        if (isYUY2) {
-          for (h = border; h < src_height - border; h += 1)
-          {   // Loop from top line to bottom line 
-            varline = 0; // line luma variation 
-            meanline = 0;
-            SumLine_yuy2_isse(srcp, src_width - borderw * 2, &meanline, &varline);
-            var64 += varline;
-            mean64 += meanline;
-            srcp += src_pitch;
-          }
-          _asm emms
-        }
-        else {
-          for (h = border; h < src_height - border; h += 1)
-          {   // Loop from top line to bottom line 
-            varline = 0; // line luma variation 
-            meanline = 0;
-            SumLine_isse(srcp, src_width - borderw * 2, &meanline, &varline);
-            var64 += varline;
-            mean64 += meanline;
-            srcp += src_pitch;
-          }
-          _asm emms
-        }
+        if (isYUY2)
+          SumFrame_YUY2_isse(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
+        else
+          SumFrame_isse(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
       }
 #endif
       else {
-          // C
-        if (isYUY2) {
-          for (h = border; h < src_height - border; h += 1)
-          {   // Loop from top line to bottom line 
-            varline = 0; // line luma variation 
-            meanline = 0;
-            SumLine_yuy2_c(srcp, src_width - borderw * 2, &meanline, &varline);
-            var64 += varline;
-            mean64 += meanline;
-            srcp += src_pitch;
-          }
-        }
-        else {
-          for (h = border; h < src_height - border; h += 1)
-          {   // Loop from top line to bottom line 
-            varline = 0; // line luma variation 
-            meanline = 0;
-            SumLine_c(srcp, src_width - borderw * 2, &meanline, &varline);
-            var64 += varline;
-            mean64 += meanline;
-            srcp += src_pitch;
-          }
-        }
+        if (isYUY2)
+          SumFrame_YUY2_c(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
+        else
+          SumFrame_c(srcp, src_pitch, src_width, src_height, borderw, border, &mean64, &var64);
       }
 
       if (isYUY2) {
@@ -864,11 +928,10 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
         var = var64 / (((src_height - 2 * border) * (src_width / 2 - borderw))); // norm variation value (*2 every 2) - // changed in v.0.4
       }
       else {
-        mean = mean64 / ((src_height - 2 * border) * (src_width - 2*borderw)); // norm mean value
-        var = var64 / (((src_height - 2 * border) * (src_width - 2*borderw))); // norm variation value
+        mean = mean64 / ((src_height - 2 * border) * (src_width - 2 * borderw)); // norm mean value
+        var = var64 / (((src_height - 2 * border) * (src_width - 2 * borderw))); // norm variation value
       }
 
-#endif
       var = var - mean * mean; // correction
 
       // put to cache
@@ -1060,76 +1123,45 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
   const int dst_height = dst->GetHeight();
 
   if (!isYUY2)
-  { 
+  {
     // copy chroma planes
     if (vi.NumComponents() >= 3) {
       copy_plane(dst, src, PLANAR_U, env);
       copy_plane(dst, src, PLANAR_V, env);
     }
     // copy alpha plane
-    if(vi.NumComponents() == 4)
+    if (vi.NumComponents() == 4)
       copy_plane(dst, src, PLANAR_A, env);
   }
 
   // deal with the Y Plane
     // luma correction	
-  if (has_SSE2)
+  if (has_AVX2) {
+    if (isYUY2)
+      CorrectFrame_YUY2_avx2(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
+    else
+      CorrectFrame_avx2(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
+  }
+  else if (has_SSE2)
   {
-    if (isYUY2) {
-      for (h = 0; h < src_height; h++)
-      {       // Loop from top line to bottom line 
-        CorrectYUY2_sse2(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-        srcp += src_pitch;
-        dstp += dst_pitch;
-      }
-    }
-    else {
-      for (h = 0; h < src_height; h++)
-      {       // Loop from top line to bottom line 
-        CorrectYV12_sse2(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-        srcp += src_pitch;
-        dstp += dst_pitch;
-      }
-    }
+    if (isYUY2)
+      CorrectFrame_YUY2_sse2(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
+    else
+      CorrectFrame_sse2(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
   }
 #ifndef X86_64
   else if (has_SSE) {
     if (isYUY2)
-    {
-      for (h = 0; h < src_height; h++)
-      {       // Loop from top line to bottom line 
-        CorrectYUY2_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-        srcp += src_pitch;
-        dstp += dst_pitch;
-      }
-      __asm emms
-    }
-    else {
-      for (h = 0; h < src_height; h++)
-      {       // Loop from top line to bottom line 
-        CorrectYV12_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-        srcp += src_pitch;
-        dstp += dst_pitch;
-      }
-      __asm emms
-    }
+      CorrectFrame_YUY2_isse(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
+    else
+      CorrectFrame_isse(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
   }
 #endif
   else {
-    // C
-    for (h = 0; h < src_height; h++)
-    {       // Loop from top line to bottom line 
-      if (isYUY2)
-      {
-        CorrectYUY2_c(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-      }
-      else
-      { // YV12
-        CorrectYV12_c(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-      }
-      srcp += src_pitch;
-      dstp += dst_pitch;
-    }
+    if (isYUY2)
+      CorrectFrame_YUY2_c(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
+    else
+      CorrectFrame_c(dstp, dst_pitch, srcp, src_pitch, src_height, src_width, mult256w, addw, lmin, lmax);
   }
 
   // make border visible
