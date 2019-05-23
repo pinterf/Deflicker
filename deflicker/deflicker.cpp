@@ -822,9 +822,7 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
   int src_height;// = src->GetHeight();
   int w, h;
   int ncur, n, nbase;
-  int cur;
   int mean, var, meancur;
-  int varline, meanline;
   float meansmoothed;
   float a, b, alfa, beta, var_y;
   float mult, add;
