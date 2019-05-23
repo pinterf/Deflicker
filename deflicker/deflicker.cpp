@@ -28,6 +28,7 @@
 
 #include "info.h" // for info on frame
 #include "stdint.h"
+#include "immintrin.h"
 
 class Deflicker : public GenericVideoFilter {
   // Deflicker defines the name of your filter class. 
@@ -62,7 +63,9 @@ class Deflicker : public GenericVideoFilter {
   int fieldbased;
   bool isYUY2;
 
-  int opt; // 0:C, 1:SSE
+  bool has_SSE;
+  bool has_SSE2;
+  bool has_AVX2;
 
 public:
   // This defines that these functions are present in your class.
@@ -70,7 +73,7 @@ public:
   // Since the functions are "public" they are accessible to other classes.
   // Otherwise they can only be called from functions within the class itself.
 
-  Deflicker(PClip _child, float _percent, int _lag, float _noise, int _scene, int _lmin, int _lmax, int _border, int _info, int _debug, IScriptEnvironment* env);
+  Deflicker(PClip _child, float _percent, int _lag, float _noise, int _scene, int _lmin, int _lmax, int _border, int _info, int _debug, int _opt, IScriptEnvironment* env);
   // This is the constructor. It does not return any value, and is always used, 
   //  when an instance of the class is created.
   // Since there is no code in this, this is the definition.
@@ -90,7 +93,7 @@ public:
  ***************************/
 
  //Here is the actual constructor code used
-Deflicker::Deflicker(PClip _child, float _percent, int _lag, float _noise, int _scene, int _lmin, int _lmax, int _border, int _info, int _debug, IScriptEnvironment* env) :
+Deflicker::Deflicker(PClip _child, float _percent, int _lag, float _noise, int _scene, int _lmin, int _lmax, int _border, int _info, int _debug, int _opt, IScriptEnvironment* env) :
   GenericVideoFilter(_child), percent(_percent), lag(_lag), noise(_noise), scene(_scene), lmin(_lmin), lmax(_lmax), border(_border), info(_info), debug(_debug) {
   // This is the implementation of the constructor.
   // The child clip (source clip) is inherited by the GenericVideoFilter,
@@ -98,22 +101,34 @@ Deflicker::Deflicker(PClip _child, float _percent, int _lag, float _noise, int _
   //   PClip child;   // Contains the source clip.
   //   VideoInfo vi;  // Contains videoinfo on the source clip.
 
-  opt = 0; // C
-
-#ifndef X86_64
-  // no x64 asm at the moment. Todo: move to intrinsics 
-  if (env->GetCPUFlags() & CPUF_SSE)
-  {
-    opt = 1;
-  }
-#endif
-
   if(!vi.IsYUY2() && !vi.IsY() && !vi.IsYUV() && !vi.IsYUVA())
     env->ThrowError("Deflicker: input to filter must be Y, YUV or YUY2!");
   if (vi.BitsPerComponent() > 8)
     env->ThrowError("Deflicker: only 8 bit clips supported");
 
   isYUY2 = vi.IsYUY2();
+
+  has_SSE = (env->GetCPUFlags() & CPUF_SSE) == CPUF_SSE;
+  has_SSE2 = (env->GetCPUFlags() & CPUF_SSE2) == CPUF_SSE2;
+  has_AVX2 = (env->GetCPUFlags() & CPUF_AVX2) == CPUF_AVX2;
+ 
+  /*
+  opt. for testing slower processor code paths
+  <0 (default): auto
+  0: C
+  1: SSE
+  2: SSE2
+  other: AVX2
+  */
+  if (_opt >= 0) {
+    if (_opt < 3)
+      has_AVX2 = false;
+    if (_opt < 2)
+      has_SSE2 = false;
+    if (_opt < 1)
+      has_SSE = false; // pure C
+  }
+     
 
   range = abs(lag);
 
@@ -215,10 +230,20 @@ const __int64 AllMask = 0xffffffffffffffff;
 //
 //****************************************************************************
 //
-_inline void SumLine_c(const BYTE* srcp, int width, int* mean, int* varline)
+_inline void SumLine_yuy2_c(const BYTE* srcp, int width, int* mean, int* varline)
 {
   for (int w = 0; w < width; w += 2)
   {   // use step=2 for more fast YV12 and using the same code for YUY2
+    int cur = srcp[w];
+    *mean += cur;
+    *varline += cur * cur; // simply quadrat, sub mean later
+  }
+}
+
+_inline void SumLine_c(const BYTE* srcp, int width, int* mean, int* varline)
+{
+  for (int w = 0; w < width; w++)
+  { 
     int cur = srcp[w];
     *mean += cur;
     *varline += cur * cur; // simply quadrat, sub mean later
@@ -229,7 +254,7 @@ _inline void SumLine_c(const BYTE* srcp, int width, int* mean, int* varline)
 //****************************************************************************
 //
 #ifndef X86_64
-void SumLine_isse(const BYTE* srcp, int width, int* mean, int* varline)
+void SumLine_yuy2_isse(const BYTE* srcp, int width, int* mean, int* varline)
 {
   // no inline asm for x64 in VS2019
 //	for (int w = 0; w < width; w+=2) 
@@ -273,7 +298,142 @@ void SumLine_isse(const BYTE* srcp, int width, int* mean, int* varline)
 
   }
 }
+
+// v0.6: non-YUY2: count not only every second pixels
+void SumLine_isse(const BYTE* srcp, int width, int* mean, int* varline)
+{
+  // no inline asm for x64 in VS2019
+//	for (int w = 0; w < width; w+=2) 
+//	{   // use step=2 for more fast YV12 and using the same code for YUY2
+//		int cur = srcp[w];
+//		*mean += cur;
+//		*varline += cur*cur; // simply quadrat, sub mean later
+//	}
+  _asm
+  {
+    mov		esi, srcp
+    mov		ecx, width
+    mov		edi, mean
+    mov		ebx, varline
+    movd	mm1, [edi] // will be sum of src
+    pxor	mm0, mm0 // 0
+    movd	mm2, [ebx] // will be sum of src*src
+    xor eax, eax
+    ALIGN 16
+    Loop4:
+    movq	mm3, [esi + eax] // get 8 byte (4 pixels)
+      movq	mm4, mm3
+      psadbw	mm3, mm0 // sum of 4 abs(src-0)
+      paddd	mm1, mm3 // cumulative sum
+
+      movq	mm3, mm4
+      // even pixels
+      pand	mm4, YMask // every second byte of src
+      pmullw	mm4, mm4 // low word of src*src
+      movq	mm5, mm4
+      psllw	mm5, 8 //low bytes to high
+      psadbw	mm5, mm0 // sum of abs(src*src-0) low
+      psrlw	mm4, 8 // high bytes to low
+      psadbw	mm4, mm0 // sum of abs(src*src-0) high
+      pslld	mm4, 8 // set  sum ( high) as high
+
+      paddd	mm2, mm4 // cumulative sum of src*src low
+      paddd	mm2, mm5 // cumulative sum of src*src high
+
+      // odd pixels
+      movq	mm4, mm3
+      psrlw	mm4, 8
+      pmullw	mm4, mm4 // low word of src*src
+      movq	mm5, mm4
+      psllw	mm5, 8 //low bytes to high
+      psadbw	mm5, mm0 // sum of abs(src*src-0) low
+      psrlw	mm4, 8 // high bytes to low
+      psadbw	mm4, mm0 // sum of abs(src*src-0) high
+      pslld	mm4, 8 // set  sum ( high) as high
+
+      paddd	mm2, mm4 // cumulative sum of src*src low
+      paddd	mm2, mm5 // cumulative sum of src*src high
+      add		eax, 8
+      cmp		eax, ecx
+      jl		Loop4
+
+      movd[edi], mm1 // save sum of src
+      movd[ebx], mm2 // save sum of src*src
+
+  }
+}
 #endif
+
+template<bool isYUY2>
+void SumLine_sse2(const BYTE* srcp, int width, int* mean, int* varline)
+{
+  const int wmod16 = width / 16 * 16;
+  auto zero = _mm_setzero_si128();
+  int sum = 0;
+  int sqrsum = 0;
+  auto sum_simd = _mm_setzero_si128();
+  auto sqrsum_simd = _mm_setzero_si128();
+  for (int x = 0; x < wmod16; x += 16)
+  {
+    auto src = _mm_loadu_si128((const __m128i*)(srcp + x));
+    if constexpr (isYUY2)
+      src = _mm_and_si128(src, _mm_set1_epi16(0x00FF)); // luma mask
+    auto horiz_sum = _mm_sad_epu8(src, zero);
+    sum_simd = _mm_add_epi32(sum_simd, horiz_sum);
+
+    auto src_lo = _mm_unpacklo_epi8(src, zero);
+    auto mul_lo = _mm_mullo_epi16(src_lo, src_lo);
+    auto src_hi = _mm_unpackhi_epi8(src, zero);
+    auto mul_hi = _mm_mullo_epi16(src_hi, src_hi);
+
+    // A = a*a
+    // Ahi Alo Ahi Alo Ahi Alo Ahi Alo Ahi Alo Ahi Alo Ahi Alo Ahi Alo
+    // Alo   0 Alo   0 Alo   0 Alo   0 Alo   0 Alo   0 Alo   0 Alo   0
+    // Alo+0+Alo+0+Alo+0+Alo+0         Alo+0+Alo+0+Alo+0+Alo+0
+    auto horiz_sum16_lo_lo8 = _mm_sad_epu8(_mm_slli_epi16(mul_lo, 8), zero); // sum LSB
+    sqrsum_simd = _mm_add_epi32(sqrsum_simd, horiz_sum16_lo_lo8);
+    //   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0
+    // 0+Ahi+0+Ahi+0+Ahi+0+Ahi           0+Ahi+0+Ahi+0+Ahi+0+Ahi
+    auto horiz_sum16_lo_hi8 = _mm_sad_epu8(_mm_srli_epi16(mul_lo, 8), zero); // sum MSB, later to be multiplied by 256
+    sqrsum_simd = _mm_add_epi32(sqrsum_simd, _mm_slli_epi32(horiz_sum16_lo_hi8,8));
+
+    auto horiz_sum16_hi_lo8 = _mm_sad_epu8(_mm_slli_epi16(mul_hi, 8), zero); // sum LSB
+    sqrsum_simd = _mm_add_epi32(sqrsum_simd, horiz_sum16_hi_lo8);
+    //   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0 Ahi   0
+    // 0+Ahi+0+Ahi+0+Ahi+0+Ahi           0+Ahi+0+Ahi+0+Ahi+0+Ahi
+    auto horiz_sum16_hi_hi8 = _mm_sad_epu8(_mm_srli_epi16(mul_hi, 8), zero); // sum MSB, later to be multiplied by 256
+    sqrsum_simd = _mm_add_epi32(sqrsum_simd, _mm_slli_epi32(horiz_sum16_hi_hi8, 8));
+
+  }
+
+  // sum here: two 32 bit partial result: sum1 0 sum2 0
+  auto sum_hi = _mm_unpackhi_epi64(sum_simd, zero);
+  // or: __m128i sum_hi = _mm_castps_si128(_mm_movehl_ps(_mm_setzero_ps(), _mm_castsi128_ps(sum)));
+  sum_simd = _mm_add_epi32(sum_simd, sum_hi);
+  int rowsum = _mm_cvtsi128_si32(sum_simd);
+  *mean += rowsum;
+
+  // sum here: two 32 bit partial result: sum1 0 sum2 0
+  auto sqrsum_hi = _mm_unpackhi_epi64(sqrsum_simd, zero);
+  sqrsum_simd = _mm_add_epi32(sqrsum_simd, sqrsum_hi);
+  int rowsqrsum = _mm_cvtsi128_si32(sqrsum_simd);
+  *varline += rowsqrsum;
+
+  int increment;
+  if constexpr (isYUY2)
+    increment = 2;
+  else
+    increment = 1;
+
+
+	for (int x = wmod16; x < width; x+=increment) 
+	{   // don't use step=2 for non YUY2
+		int cur = srcp[x];
+		*mean += cur;
+		*varline += cur*cur; // simply quadrat, sub mean later
+	}
+
+}
 
 //
 //****************************************************************************
@@ -359,6 +519,76 @@ _inline void CorrectYV12_c(BYTE* dstp, const BYTE* srcp, int src_width, short mu
   }
 }
 
+_inline void CorrectYV12_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+{ // correct luma 
+
+  const int wmod16 = src_width / 16 * 16;
+  auto zero = _mm_setzero_si128();
+  const __m128i mult256w_simd = _mm_set1_epi16(mult256w);
+  const __m128i addw_simd = _mm_set1_epi16(addw);
+  const __m128i lmin_simd = _mm_set1_epi8(lmin);
+  const __m128i lmax_simd = _mm_set1_epi8(lmax);
+  for (int x = 0; x < wmod16; x += 16)
+  {
+    auto src = _mm_loadu_si128((const __m128i*)(srcp + x));
+    auto src_lo_mul256 = _mm_unpacklo_epi8(zero, src);
+    auto src_hi_mul256 = _mm_unpackhi_epi8(zero, src);
+
+    auto mul_lo = _mm_mulhi_epu16(src_lo_mul256, mult256w_simd);
+    auto mul_hi = _mm_mulhi_epu16(src_hi_mul256, mult256w_simd);
+
+    auto tmp_lo = _mm_adds_epi16(mul_lo, addw_simd);
+    auto tmp_hi = _mm_adds_epi16(mul_hi, addw_simd);
+
+    auto res = _mm_min_epu8(_mm_max_epu8(_mm_packus_epi16(tmp_lo, tmp_hi), lmin_simd), lmax_simd);
+    _mm_storeu_si128((__m128i*)(dstp + x), res);
+  }
+
+  for (int x = wmod16; x < src_width; x++)
+  {
+    int cur = ((srcp[x] * mult256w) >> 8) + addw;
+    dstp[x] = min(max(cur, lmin), lmax);
+  }
+
+}
+
+_inline void CorrectYUY2_sse2(BYTE* dstp, const BYTE* srcp, int src_width, short mult256w, short addw, short lmin, short lmax)
+{ // correct luma 
+  const int wmod16 = src_width / 16 * 16;
+  auto zero = _mm_setzero_si128();
+  const __m128i mult256w_simd = _mm_set1_epi16(mult256w);
+  const __m128i addw_simd = _mm_set1_epi16(addw);
+  const __m128i lmin_simd = _mm_set1_epi8(lmin);
+  const __m128i lmax_simd = _mm_set1_epi8(lmax);
+  const __m128i uvmask = _mm_set1_epi16(0xFF00);
+  for (int x = 0; x < wmod16; x += 16)
+  {
+    auto src = _mm_loadu_si128((const __m128i*)(srcp + x)); // YUYV
+    auto uv = _mm_and_si128(src, uvmask);
+    auto src_lo_mul256 = _mm_unpacklo_epi8(zero, src);
+    auto src_hi_mul256 = _mm_unpackhi_epi8(zero, src);
+
+    auto mul_lo = _mm_mulhi_epu16(src_lo_mul256, mult256w_simd);
+    auto mul_hi = _mm_mulhi_epu16(src_hi_mul256, mult256w_simd);
+
+    auto tmp_lo = _mm_adds_epi16(mul_lo, addw_simd);
+    auto tmp_hi = _mm_adds_epi16(mul_hi, addw_simd);
+
+    auto res = _mm_min_epu8(_mm_max_epu8(_mm_packus_epi16(tmp_lo, tmp_hi), lmin_simd), lmax_simd);
+    res = _mm_andnot_si128(uvmask, res);
+    res = _mm_or_si128(res, uv);
+    _mm_storeu_si128((__m128i*)(dstp + x), res);
+  }
+
+  for (int x = wmod16; x < src_width; x+=2)
+  {
+      int cur = ((srcp[x] * mult256w) >> 8) + addw;
+      dstp[x] = min(max(cur, lmin), lmax); //Y
+      dstp[x + 1] = srcp[x + 1]; // U,V
+  }
+
+}
+
 //
 //****************************************************************************
 //
@@ -442,7 +672,8 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
   int w, h;
   int ncur, n, nbase;
   int cur;
-  int mean, var, meancur, varline;
+  int mean, var, meancur;
+  int varline, meanline;
   float meansmoothed;
   float a, b, alfa, beta, var_y;
   float mult, add;
@@ -511,17 +742,19 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
       src_height = src->GetHeight();
 
 
-      mean = 0; // mean luma
-      var = 0; // luma variation
+      int64_t mean64 = 0; // mean luma, 32 ibt int is good for summing up 2^23 pixels (8 388 608) in 8 bit
+      int64_t var64 = 0; // luma variation
       srcp += border * src_pitch + borderw; // start offset (skip border lines)
-
+#if 0
       if (opt == 0) {
         for (h = border; h < src_height - border; h += 1)
         {   // Loop from top line to bottom line 
-          varline = 0; // line luma variation 
-          SumLine_c(srcp, src_width - borderw * 2, &mean, &varline);
-          var += (varline >> 5); //   /32 approximation, to not overflow
-          srcp += src_pitch;   // Add the pitch of one line (in bytes) to the source image.
+          varline = 0; // line luma variation
+          meanline = 0;
+          SumLine_yuy2_c(srcp, src_width - borderw * 2, &meanline, &varline);
+          var64 += varline;
+          mean64 += meanline;
+          srcp += src_pitch;
         }
       }
 #ifndef X86_64
@@ -529,23 +762,113 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
         for (h = border; h < src_height - border; h += 1)
         {   // Loop from top line to bottom line 
           varline = 0; // line luma variation 
+          meanline = 0;
 //					for (w = 0; w < src_width-borderw*2; w+=2) // chanded in v.0.4
 //					{   // use step=2 for more fast YV12 and using the same code for YUY2
 //						cur = srcp[w];
 //						mean += cur;
 //						varline += cur*cur; // simply quadrat, sub mean later
 //					}
-          SumLine_isse(srcp, src_width - borderw * 2, &mean, &varline);
-          var += (varline >> 5); //   /32 approximation, to not overflow
-          srcp += src_pitch;   // Add the pitch of one line (in bytes) to the source image.
+          SumLine_isse(srcp, src_width - borderw * 2, &meanline, &varline);
+          var64 += varline;
+          mean64 += meanline;
+          srcp += src_pitch;
         }
         _asm emms
       }
 #endif
 
-      mean = mean / ((src_height - 2 * border) * (src_width / 2 - borderw)); // norm mean value (*2 every 2) - chanded in v.0.4
-      var = var / (((src_height - 2 * border) * (src_width / 2 - borderw)) / (32)); // norm variation value (*2 every 2) - // chanded in v.0.4
-//			var = var; 
+      mean = mean64 / ((src_height - 2 * border) * (src_width / 2 - borderw)); // norm mean value (*2 every 2) - chanded in v.0.4
+      var = var64 / ((src_height - 2 * border) * (src_width / 2 - borderw)); // norm variation value (*2 every 2) - // chanded in v.0.4
+#else
+      if (has_SSE2) {
+        if (isYUY2) {
+          for (h = border; h < src_height - border; h++)
+          {   // Loop from top line to bottom line 
+            varline = 0; // line luma variation 
+            meanline = 0;
+            SumLine_sse2<true>(srcp, src_width - borderw * 2, &meanline, &varline);
+            var64 += varline;
+            mean64 += meanline;
+            srcp += src_pitch;
+          }
+        }
+        else {
+          for (h = border; h < src_height - border; h++)
+          {   // Loop from top line to bottom line 
+            varline = 0; // line luma variation 
+            meanline = 0;
+            SumLine_sse2<false>(srcp, src_width - borderw * 2, &meanline, &varline);
+            var64 += varline;
+            mean64 += meanline;
+            srcp += src_pitch;
+          }
+        }
+      }
+#ifndef X86_64
+      else if (has_SSE) {
+        if (isYUY2) {
+          for (h = border; h < src_height - border; h += 1)
+          {   // Loop from top line to bottom line 
+            varline = 0; // line luma variation 
+            meanline = 0;
+            SumLine_yuy2_isse(srcp, src_width - borderw * 2, &meanline, &varline);
+            var64 += varline;
+            mean64 += meanline;
+            srcp += src_pitch;
+          }
+          _asm emms
+        }
+        else {
+          for (h = border; h < src_height - border; h += 1)
+          {   // Loop from top line to bottom line 
+            varline = 0; // line luma variation 
+            meanline = 0;
+            SumLine_isse(srcp, src_width - borderw * 2, &meanline, &varline);
+            var64 += varline;
+            mean64 += meanline;
+            srcp += src_pitch;
+          }
+          _asm emms
+        }
+      }
+#endif
+      else {
+          // C
+        if (isYUY2) {
+          for (h = border; h < src_height - border; h += 1)
+          {   // Loop from top line to bottom line 
+            varline = 0; // line luma variation 
+            meanline = 0;
+            SumLine_yuy2_c(srcp, src_width - borderw * 2, &meanline, &varline);
+            var64 += varline;
+            mean64 += meanline;
+            srcp += src_pitch;
+          }
+        }
+        else {
+          for (h = border; h < src_height - border; h += 1)
+          {   // Loop from top line to bottom line 
+            varline = 0; // line luma variation 
+            meanline = 0;
+            SumLine_c(srcp, src_width - borderw * 2, &meanline, &varline);
+            var64 += varline;
+            mean64 += meanline;
+            srcp += src_pitch;
+          }
+        }
+      }
+
+      if (isYUY2) {
+        mean = mean64 / ((src_height - 2 * border) * (src_width / 2 - borderw)); // norm mean value (*2 every 2) - changed in v.0.4
+        var = var64 / (((src_height - 2 * border) * (src_width / 2 - borderw))); // norm variation value (*2 every 2) - // changed in v.0.4
+      }
+      else {
+        mean = mean64 / ((src_height - 2 * border) * (src_width - 2*borderw)); // norm mean value
+        var = var64 / (((src_height - 2 * border) * (src_width - 2*borderw))); // norm variation value
+      }
+
+#endif
       var = var - mean * mean; // correction
 
       // put to cache
@@ -749,9 +1072,51 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
   }
 
   // deal with the Y Plane
-
-  if (opt == 0) { // C
     // luma correction	
+  if (has_SSE2)
+  {
+    if (isYUY2) {
+      for (h = 0; h < src_height; h++)
+      {       // Loop from top line to bottom line 
+        CorrectYUY2_sse2(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+        srcp += src_pitch;
+        dstp += dst_pitch;
+      }
+    }
+    else {
+      for (h = 0; h < src_height; h++)
+      {       // Loop from top line to bottom line 
+        CorrectYV12_sse2(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+        srcp += src_pitch;
+        dstp += dst_pitch;
+      }
+    }
+  }
+#ifndef X86_64
+  else if (has_SSE) {
+    if (isYUY2)
+    {
+      for (h = 0; h < src_height; h++)
+      {       // Loop from top line to bottom line 
+        CorrectYUY2_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+        srcp += src_pitch;
+        dstp += dst_pitch;
+      }
+      __asm emms
+    }
+    else {
+      for (h = 0; h < src_height; h++)
+      {       // Loop from top line to bottom line 
+        CorrectYV12_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
+        srcp += src_pitch;
+        dstp += dst_pitch;
+      }
+      __asm emms
+    }
+  }
+#endif
+  else {
+    // C
     for (h = 0; h < src_height; h++)
     {       // Loop from top line to bottom line 
       if (isYUY2)
@@ -762,41 +1127,10 @@ PVideoFrame __stdcall Deflicker::GetFrame(int ndest, IScriptEnvironment* env) {
       { // YV12
         CorrectYV12_c(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
       }
-      srcp += src_pitch;            // Add the pitch  of one line (in bytes) to the source image.
-      dstp += dst_pitch;            // Add the pitch of one line (in bytes) to the dest image.
+      srcp += src_pitch;
+      dstp += dst_pitch;
     }
   }
-#ifndef X86_64
-  else {
-
-    // luma correction	
-    for (h = 0; h < src_height; h++)
-    {       // Loop from top line to bottom line 
-      if (isYUY2)
-      {
-        //			for (w = 0; w < src_width; w+=2) // every 2
-        //			{    
-        //				cur = (srcp[w]*mult256w)>>8 + addw;  // scaled by 256 integer - fast 
-        //				dstp[w] = min(max(cur,lmin),lmax);
-        //				dstp[w+1] = srcp[w+1];
-        //			}
-        CorrectYUY2_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-      }
-      else
-      { // YV12
-//			for (w = 0; w < src_width; w++) // all
-//			{    
-//				cur = (srcp[w]*mult256w )>>8 + addw;  // scaled by 256 integer - fast 
-//				dstp[w] = min(max(cur,lmin),lmax);
-//			}
-        CorrectYV12_isse(dstp, srcp, src_width, mult256w, addw, lmin, lmax);
-      }
-      srcp += src_pitch;            // Add the pitch  of one line (in bytes) to the source image.
-      dstp += dst_pitch;            // Add the pitch of one line (in bytes) to the dest image.
-    }
-    __asm emms
-  }
-#endif
 
   // make border visible
   if (info != 0 && border > 0)
@@ -900,6 +1234,7 @@ AVSValue __cdecl Create_Deflicker(AVSValue args, void* user_data, IScriptEnviron
     args[7].AsInt(0), //border - exclude from estimation the border at all edges (pixels)
     args[8].AsBool(false), //info
     args[9].AsBool(false), //debug
+    args[10].AsInt(-1), //opt
     env);
   // Calls the constructor with the arguments provied.
 }
@@ -912,7 +1247,7 @@ const AVS_Linkage* AVS_linkage = nullptr;
 
 extern "C" __declspec(dllexport) const char* __stdcall AvisynthPluginInit3(IScriptEnvironment* env, const AVS_Linkage* const vectors) {
   AVS_linkage = vectors;
-  env->AddFunction("Deflicker", "c[percent]f[lag]i[noise]f[scene]i[lmin]i[lmax]i[border]i[info]b[debug]b", Create_Deflicker, 0);
+  env->AddFunction("Deflicker", "c[percent]f[lag]i[noise]f[scene]i[lmin]i[lmax]i[border]i[info]b[debug]b[opt]i", Create_Deflicker, 0);
   return "Deflicker plugin";
 }
 
