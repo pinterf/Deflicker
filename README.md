@@ -19,7 +19,6 @@ Versions
 - 0.4 (2004) by Fizick
 
 ### Links ###
-https://github.com/pinterf/Deflicker
-http://avisynth.org.ru/deflicker/deflicker04.zip
-http://avisynth.org.ru/deflicker/deflicker.html
-http://www.avisynth.nl/index.php/External_filters#Luma_Equalization
+- https://github.com/pinterf/Deflicker
+- http://www.avisynth.nl/index.php/External_filters#Luma_Equalization
+- http://avisynth.org.ru/deflicker/deflicker.html
